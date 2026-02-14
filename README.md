@@ -56,13 +56,44 @@ pkexec /usr/bin/id
 
 ## Installation
 
-Package installation instructions will be added once public packages are available.
+### Arch Linux (AUR)
 
-Planned sections:
+The package is available in the Arch User Repository (AUR).
 
-- Arch Linux (AUR package)
-- Ubuntu/Debian
-- Other distributions
+**Package name:** `ryzenadj-control`
+
+Install with `yay`:
+
+```bash
+yay -S ryzenadj-control
+```
+
+Or with `paru`:
+
+```bash
+paru -S ryzenadj-control
+```
+
+Manual installation:
+
+```bash
+git clone https://aur.archlinux.org/ryzenadj-control.git
+cd ryzenadj-control
+makepkg -si
+```
+
+### Ubuntu / Debian
+
+The `.deb` package is published in GitHub Releases:
+
+`https://github.com/h4us0x/ryzenadj-control/releases`
+
+Download the latest `ryzenadj-control_<version>_amd64.deb` and install it:
+
+```bash
+sudo dpkg -i ryzenadj-control_<version>_amd64.deb
+sudo apt -f install
+```
 
 ## Development
 

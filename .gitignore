@@ -26,6 +26,8 @@ pkg/
 *.zst
 *.pkg.tar.*
 *.src.tar.*
+*.deb
+ryzenadj-control_*_amd64/
 
 # IDE / editor
 .vscode/
