@@ -7,7 +7,7 @@ import shlex
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QPalette
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -159,8 +159,8 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("RyzenAdj GUI")
-        self.resize(860, 560)
-        self.setMinimumSize(860, 560)
+        self.resize(940, 620)
+        self.setMinimumSize(900, 600)
 
         self.profile_manager = ProfileManager()
         self.executor = CommandExecutor()
@@ -463,22 +463,8 @@ class MainWindow(QMainWindow):
         refresh_button = QPushButton("Refresh Now")
         refresh_button.clicked.connect(self.refresh_monitor)
         controls.addWidget(refresh_button)
-
-        self.auto_refresh_checkbox = QCheckBox("Auto Refresh")
-        self.auto_refresh_checkbox.toggled.connect(self._toggle_auto_refresh)
-        controls.addWidget(self.auto_refresh_checkbox)
-
-        controls.addWidget(QLabel("Interval (s):"))
-        self.refresh_interval_spin = QSpinBox()
-        self.refresh_interval_spin.setRange(1, 300)
-        self.refresh_interval_spin.setValue(5)
-        self.refresh_interval_spin.valueChanged.connect(self._refresh_timer_interval)
-        controls.addWidget(self.refresh_interval_spin)
         controls.addStretch(1)
         layout.addLayout(controls)
-
-        self.refresh_timer = QTimer(self)
-        self.refresh_timer.timeout.connect(self.refresh_monitor)
 
         raw_label = QLabel("Raw --info output:")
         layout.addWidget(raw_label)
@@ -892,19 +878,6 @@ class MainWindow(QMainWindow):
 
         self.monitor_raw_output.setPlainText(stdout)
         self._update_status("Monitoring data refreshed", True)
-
-    def _toggle_auto_refresh(self, checked: bool) -> None:
-        if checked:
-            self.refresh_timer.start(self.refresh_interval_spin.value() * 1000)
-            self._update_status("Auto-refresh enabled", True)
-            self.refresh_monitor()
-        else:
-            self.refresh_timer.stop()
-            self._update_status("Auto-refresh disabled", True)
-
-    def _refresh_timer_interval(self, seconds: int) -> None:
-        if self.refresh_timer.isActive():
-            self.refresh_timer.start(seconds * 1000)
 
     def _append_output(self, command: str, stdout: str, stderr: str) -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -20,6 +20,10 @@ dist/
 build/
 *.egg-info/
 PKGBUILD
+PKGBUILD.dev
+pkg/
+*.tar.gz
+*.zst
 *.pkg.tar.*
 *.src.tar.*
 
