@@ -1,0 +1,31 @@
+# Python bytecode / cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tool caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Build / packaging
+dist/
+build/
+*.egg-info/
+PKGBUILD
+*.pkg.tar.*
+*.src.tar.*
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store

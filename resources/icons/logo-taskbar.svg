@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="UTF-8"?> <svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg"> <!-- Perfectly centered giant lightning bolt --> <!-- Bounding X: 64 to 192 → center = 128 --> <polygon points=" 148,18 64,150 118,150 96,238 192,104 138,104 " fill="#ff6a00"/> </svg>
