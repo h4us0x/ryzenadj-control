@@ -5,8 +5,8 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 
-SERVICE_PATH = Path("/etc/systemd/system/ryzenadj-gui.service")
-HOOK_PATH = Path("/usr/lib/systemd/system-sleep/ryzenadj-gui-resume")
+SERVICE_PATH = Path("/etc/systemd/system/ryzenadj-control.service")
+HOOK_PATH = Path("/usr/lib/systemd/system-sleep/ryzenadj-control-resume")
 
 
 class SystemdManager:
@@ -21,7 +21,7 @@ class SystemdManager:
         return "\n".join(
             [
                 "[Unit]",
-                "Description=Apply ryzenadj profile (ryzenadj-gui)",
+                "Description=Apply ryzenadj profile (ryzenadj-control)",
                 "After=multi-user.target",
                 "",
                 "[Service]",
@@ -67,17 +67,17 @@ class SystemdManager:
             script_lines.extend(
                 [
                     f"printf '%s' {quoted_service} > {SERVICE_PATH}",
-                    "chmod 644 /etc/systemd/system/ryzenadj-gui.service",
+                    "chmod 644 /etc/systemd/system/ryzenadj-control.service",
                     "systemctl daemon-reload",
-                    "systemctl enable ryzenadj-gui.service",
-                    "systemctl restart ryzenadj-gui.service || true",
+                    "systemctl enable ryzenadj-control.service",
+                    "systemctl restart ryzenadj-control.service || true",
                 ]
             )
         else:
             script_lines.extend(
                 [
-                    "systemctl disable ryzenadj-gui.service || true",
-                    "rm -f /etc/systemd/system/ryzenadj-gui.service",
+                    "systemctl disable ryzenadj-control.service || true",
+                    "rm -f /etc/systemd/system/ryzenadj-control.service",
                     "systemctl daemon-reload",
                 ]
             )
@@ -87,11 +87,11 @@ class SystemdManager:
             script_lines.extend(
                 [
                     f"printf '%s' {quoted_hook} > {HOOK_PATH}",
-                    "chmod 755 /usr/lib/systemd/system-sleep/ryzenadj-gui-resume",
+                    "chmod 755 /usr/lib/systemd/system-sleep/ryzenadj-control-resume",
                 ]
             )
         else:
-            script_lines.append("rm -f /usr/lib/systemd/system-sleep/ryzenadj-gui-resume")
+            script_lines.append("rm -f /usr/lib/systemd/system-sleep/ryzenadj-control-resume")
 
         return "\n".join(script_lines)
 
@@ -108,17 +108,17 @@ class SystemdManager:
             script_lines.extend(
                 [
                     f"printf '%s' {quoted_service} > {SERVICE_PATH}",
-                    "chmod 644 /etc/systemd/system/ryzenadj-gui.service",
+                    "chmod 644 /etc/systemd/system/ryzenadj-control.service",
                     "systemctl daemon-reload",
-                    "systemctl enable ryzenadj-gui.service",
-                    "systemctl restart ryzenadj-gui.service || true",
+                    "systemctl enable ryzenadj-control.service",
+                    "systemctl restart ryzenadj-control.service || true",
                 ]
             )
         else:
             script_lines.extend(
                 [
-                    "systemctl disable ryzenadj-gui.service || true",
-                    "rm -f /etc/systemd/system/ryzenadj-gui.service",
+                    "systemctl disable ryzenadj-control.service || true",
+                    "rm -f /etc/systemd/system/ryzenadj-control.service",
                     "systemctl daemon-reload",
                 ]
             )
@@ -138,10 +138,10 @@ class SystemdManager:
             script_lines.extend(
                 [
                     f"printf '%s' {quoted_hook} > {HOOK_PATH}",
-                    "chmod 755 /usr/lib/systemd/system-sleep/ryzenadj-gui-resume",
+                    "chmod 755 /usr/lib/systemd/system-sleep/ryzenadj-control-resume",
                 ]
             )
         else:
-            script_lines.append("rm -f /usr/lib/systemd/system-sleep/ryzenadj-gui-resume")
+            script_lines.append("rm -f /usr/lib/systemd/system-sleep/ryzenadj-control-resume")
 
         return "\n".join(script_lines)

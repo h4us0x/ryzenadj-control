@@ -1,4 +1,4 @@
-"""Application entry point for ryzenadj-gui."""
+"""Application entry point for ryzenadj-control."""
 
 import sys
 from pathlib import Path
@@ -11,8 +11,8 @@ from ui.main_window import MainWindow
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("ryzenadj-gui")
-    app.setOrganizationName("ryzenadj-gui")
+    app.setApplicationName("ryzenadj-control")
+    app.setOrganizationName("ryzenadj-control")
     icons_dir = Path(__file__).resolve().parent / "resources" / "icons"
     taskbar_icon_path = icons_dir / "logo-taskbar.svg"
     window_icon_png_path = icons_dir / "logo-window.png"

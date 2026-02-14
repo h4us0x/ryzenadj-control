@@ -1,4 +1,4 @@
-"""Main application window for ryzenadj-gui."""
+"""Main application window for ryzenadj-control."""
 
 from __future__ import annotations
 
@@ -158,7 +158,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("RyzenAdj GUI")
+        self.setWindowTitle("RyzenAdj Control")
         self.resize(940, 620)
         self.setMinimumSize(900, 600)
 
@@ -303,7 +303,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         description = QLabel(
-            "RyzenAdj GUI lets you tune platform power, current and clock limits through profiles.\n\n"
+            "RyzenAdj Control lets you tune platform power, current and clock limits through profiles.\n\n"
             "Recommended workflow:\n"
             "1. Right after a clean boot, click 'Set Initial Default'.\n"
             "   This captures your machine's current baseline from 'ryzenadj --info' into a read-only profile.\n"
@@ -415,7 +415,7 @@ class MainWindow(QMainWindow):
         integration_layout = QVBoxLayout(integration_group)
         self.apply_boot_checkbox = QCheckBox("Apply selected profile at system boot")
         self.apply_resume_checkbox = QCheckBox("Re-apply selected profile after resume")
-        self.start_gui_on_login_checkbox = QCheckBox("Start RyzenAdj GUI automatically after login")
+        self.start_gui_on_login_checkbox = QCheckBox("Start RyzenAdj Control automatically after login")
         self.auto_sync_integration_checkbox = QCheckBox(
             "Automatically update active boot/resume integration after profile switch"
         )
@@ -959,7 +959,7 @@ class MainWindow(QMainWindow):
     def _is_boot_integration_enabled(self) -> bool:
         try:
             proc = subprocess.run(
-                ["systemctl", "is-enabled", "ryzenadj-gui.service"],
+                ["systemctl", "is-enabled", "ryzenadj-control.service"],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -969,10 +969,10 @@ class MainWindow(QMainWindow):
             return False
 
     def _is_resume_integration_enabled(self) -> bool:
-        return Path("/usr/lib/systemd/system-sleep/ryzenadj-gui-resume").exists()
+        return Path("/usr/lib/systemd/system-sleep/ryzenadj-control-resume").exists()
 
     def _gui_autostart_path(self) -> Path:
-        return Path.home() / ".config" / "autostart" / "ryzenadj-gui.desktop"
+        return Path.home() / ".config" / "autostart" / "ryzenadj-control.desktop"
 
     def _is_gui_autostart_enabled(self) -> bool:
         return self._gui_autostart_path().exists()
@@ -982,15 +982,15 @@ class MainWindow(QMainWindow):
         try:
             if enabled:
                 autostart_path.parent.mkdir(parents=True, exist_ok=True)
-                exec_command = "ryzenadj-gui"
-                if not Path("/usr/bin/ryzenadj-gui").exists():
+                exec_command = "ryzenadj-control"
+                if not Path("/usr/bin/ryzenadj-control").exists():
                     main_path = (Path(__file__).resolve().parent.parent / "main.py").as_posix()
                     exec_command = f"python {main_path}"
                 content = "\n".join(
                     [
                         "[Desktop Entry]",
                         "Type=Application",
-                        "Name=RyzenAdj GUI",
+                        "Name=RyzenAdj Control",
                         "Comment=Frontend for ryzenadj",
                         f"Exec={exec_command}",
                         "Icon=utilities-system-monitor",

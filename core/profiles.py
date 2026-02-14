@@ -1,4 +1,4 @@
-"""Profile persistence for ryzenadj-gui."""
+"""Profile persistence for ryzenadj-control."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ class ProfileManager:
     """Load, save, import, and export tuning profiles."""
 
     def __init__(self, config_dir: Path | None = None) -> None:
-        base_dir = config_dir or Path.home() / ".config" / "ryzenadj-gui"
+        base_dir = config_dir or Path.home() / ".config" / "ryzenadj-control"
         self.config_dir = base_dir
         self.path = self.config_dir / "profiles.json"
         self.config_dir.mkdir(parents=True, exist_ok=True)

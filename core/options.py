@@ -1,4 +1,4 @@
-"""Option metadata for ryzenadj-gui."""
+"""Option metadata for ryzenadj-control."""
 
 from dataclasses import dataclass
 

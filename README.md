@@ -1,4 +1,4 @@
-# ryzenadj-gui
+# ryzenadj-control
 
 Native PyQt6 frontend for `ryzenadj` on Linux.
 
@@ -83,7 +83,7 @@ python main.py
 Profiles are saved in:
 
 ```text
-~/.config/ryzenadj-gui/profiles.json
+~/.config/ryzenadj-control/profiles.json
 ```
 
 Notes:
