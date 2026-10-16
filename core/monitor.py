@@ -18,6 +18,19 @@ INFO_PATTERNS = {
 }
 
 
+METRICS_UNAVAILABLE_HINT = (
+    "ryzenadj cannot read the power metric table, so no current limits or telemetry "
+    "are available. Applying settings still works.\n\n"
+    "Fix: install and load the 'ryzen_smu' kernel module (e.g. ryzen_smu-dkms-git), "
+    "or allow /dev/mem access with the kernel parameter 'iomem=relaxed'."
+)
+
+
+def metrics_unavailable(output: str) -> bool:
+    """Return True if ryzenadj reports that its power metric table is not readable."""
+    return "unable to init power metric table" in output.lower()
+
+
 def parse_info_output(output: str) -> dict[str, str]:
     """Extract common telemetry values from ryzenadj --info output."""
     text = output.lower()

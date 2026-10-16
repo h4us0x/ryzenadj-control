@@ -7,6 +7,12 @@ from pathlib import Path
 
 SERVICE_PATH = Path("/etc/systemd/system/ryzenadj-control.service")
 HOOK_PATH = Path("/usr/lib/systemd/system-sleep/ryzenadj-control-resume")
+REAPPLY_SERVICE_PATH = Path("/etc/systemd/system/ryzenadj-control-reapply.service")
+REAPPLY_TIMER_PATH = Path("/etc/systemd/system/ryzenadj-control-reapply.timer")
+
+REAPPLY_INTERVAL_MIN = 5
+REAPPLY_INTERVAL_MAX = 3600
+REAPPLY_INTERVAL_DEFAULT = 30
 
 
 class SystemdManager:
@@ -34,6 +40,44 @@ class SystemdManager:
             ]
         )
 
+    def build_reapply_service_content(self, command: list[str]) -> str:
+        quoted = self._quoted_command(command)
+        return "\n".join(
+            [
+                "[Unit]",
+                "Description=Periodically re-apply ryzenadj profile (ryzenadj-control)",
+                "",
+                "[Service]",
+                "Type=oneshot",
+                f"ExecStart={quoted}",
+                "StandardOutput=null",
+                "LogLevelMax=warning",
+                "",
+            ]
+        )
+
+    def build_reapply_timer_content(self, interval_seconds: int) -> str:
+        if not REAPPLY_INTERVAL_MIN <= interval_seconds <= REAPPLY_INTERVAL_MAX:
+            raise ValueError(
+                f"Re-apply interval must be between {REAPPLY_INTERVAL_MIN} "
+                f"and {REAPPLY_INTERVAL_MAX} seconds"
+            )
+        return "\n".join(
+            [
+                "[Unit]",
+                "Description=Periodically re-apply ryzenadj profile (ryzenadj-control)",
+                "",
+                "[Timer]",
+                f"OnBootSec={interval_seconds}s",
+                f"OnUnitActiveSec={interval_seconds}s",
+                "AccuracySec=1s",
+                "",
+                "[Install]",
+                "WantedBy=timers.target",
+                "",
+            ]
+        )
+
     def build_sleep_hook_content(self, command: list[str]) -> str:
         quoted = self._quoted_command(command)
         return "\n".join(
@@ -51,6 +95,8 @@ class SystemdManager:
         command: list[str],
         enable_boot: bool,
         enable_resume: bool,
+        enable_reapply: bool = False,
+        reapply_interval: int = REAPPLY_INTERVAL_DEFAULT,
     ) -> str:
         """Generate a shell script that applies selected integration state."""
         service_content = self.build_service_content(command)
@@ -92,6 +138,28 @@ class SystemdManager:
             )
         else:
             script_lines.append("rm -f /usr/lib/systemd/system-sleep/ryzenadj-control-resume")
+
+        if enable_reapply:
+            quoted_reapply_service = shlex.quote(self.build_reapply_service_content(command))
+            quoted_reapply_timer = shlex.quote(self.build_reapply_timer_content(reapply_interval))
+            script_lines.extend(
+                [
+                    f"printf '%s' {quoted_reapply_service} > {REAPPLY_SERVICE_PATH}",
+                    f"printf '%s' {quoted_reapply_timer} > {REAPPLY_TIMER_PATH}",
+                    f"chmod 644 {REAPPLY_SERVICE_PATH} {REAPPLY_TIMER_PATH}",
+                    "systemctl daemon-reload",
+                    "systemctl enable ryzenadj-control-reapply.timer",
+                    "systemctl restart ryzenadj-control-reapply.timer || true",
+                ]
+            )
+        else:
+            script_lines.extend(
+                [
+                    "systemctl disable --now ryzenadj-control-reapply.timer || true",
+                    f"rm -f {REAPPLY_SERVICE_PATH} {REAPPLY_TIMER_PATH}",
+                    "systemctl daemon-reload",
+                ]
+            )
 
         return "\n".join(script_lines)
 

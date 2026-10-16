@@ -5,8 +5,9 @@ Native PyQt6 frontend for `ryzenadj` on Linux.
 ## Features
 
 - Native Qt6 GUI (PyQt6), lightweight and fast
-- Profile management: save, load, delete, reset to captured defaults
-- Internal `Initial Default` capture from `ryzenadj --info`
+- Profile management: create, save, load, delete, import/export (menu button left of `Profile`)
+- Stock values captured from `ryzenadj --info` on first start; `Apply` stays locked until captured
+- `Restore Stock` applies the captured stock values and removes active boot/resume/re-apply integration
 - Full tuning pages for power/current/clocks/advanced options
 - Per-setting enable checkbox
 - Non-blocking command execution with command output panel
@@ -14,9 +15,10 @@ Native PyQt6 frontend for `ryzenadj` on Linux.
 - System integration via checkboxes + `Apply Integration`:
   - apply selected profile at boot
   - re-apply after resume
+  - periodically re-apply via systemd timer (for firmware that resets limits, e.g. ThinkPads with AMD PMF)
   - start GUI automatically after login
 - Integration state is detected at app startup
-- Optional auto-sync of active boot/resume integration after profile switch
+- Optional auto-sync of active boot/resume/re-apply integration after Apply
 - Monitoring page with `ryzenadj --info`
 
 ## Screenshots
@@ -120,8 +122,8 @@ Profiles are saved in:
 Notes:
 
 - User profiles are visible in the profile selector.
-- `Initial Default` is stored internally and hidden from normal profile selection.
-- `Reset to Default` is available after `Set Initial Default` was captured.
+- Stock values are stored internally as `Initial Default` and hidden from normal profile selection.
+- `Restore Stock` is available after `Capture Stock Values`. Re-capture via the menu button left of `Profile` (only right after a clean boot).
 
 ## Troubleshooting
 
@@ -129,6 +131,8 @@ Notes:
 - Apply does nothing: enable at least one setting before `Apply`.
 - Permission errors: enable `pkexec` in System tab.
 - Monitoring values show `N/A`: inspect raw `--info` output in Monitoring.
+- `Unable to init power metric table`: load the `ryzen_smu` kernel module (e.g. `ryzen_smu-dkms-git`) or boot with `iomem=relaxed`. After kernel updates, check that DKMS rebuilt the module (`dkms status`).
+- Limits are reset after a while: enable periodic re-apply on the System page.
 - Some values are reported as unsupported: app may still apply remaining supported values.
 
 ## Disclaimer

@@ -7,8 +7,8 @@ import shlex
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QPalette
+from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtGui import QAction, QDesktopServices, QIcon, QPalette
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -36,10 +37,21 @@ from PyQt6.QtWidgets import (
 )
 
 from core.executor import CommandExecutor, build_ryzenadj_command
-from core.monitor import parse_info_output, parse_profile_values_from_info
+from core.monitor import (
+    METRICS_UNAVAILABLE_HINT,
+    metrics_unavailable,
+    parse_info_output,
+    parse_profile_values_from_info,
+)
 from core.options import BOOLEAN_OPTIONS, NUMERIC_OPTIONS, default_profile_values, options_by_category
 from core.profiles import ProfileError, ProfileManager
-from core.systemd import SystemdManager
+from core.systemd import (
+    REAPPLY_INTERVAL_DEFAULT,
+    REAPPLY_INTERVAL_MAX,
+    REAPPLY_INTERVAL_MIN,
+    REAPPLY_TIMER_PATH,
+    SystemdManager,
+)
 
 
 class CollapsibleBox(QWidget):
@@ -176,15 +188,16 @@ class MainWindow(QMainWindow):
         self.reset_button: QPushButton | None = None
         self.apply_boot_checkbox: QCheckBox | None = None
         self.apply_resume_checkbox: QCheckBox | None = None
+        self.reapply_checkbox: QCheckBox | None = None
+        self.reapply_interval_spin: QSpinBox | None = None
         self.start_gui_on_login_checkbox: QCheckBox | None = None
         self.auto_sync_integration_checkbox: QCheckBox | None = None
+        self.apply_unlocked_without_stock = False
 
         self._init_ui()
         self._load_profiles_on_startup()
 
     def _init_ui(self) -> None:
-        self._build_menu()
-
         root = QWidget()
         self.setCentralWidget(root)
         root_layout = QVBoxLayout(root)
@@ -192,6 +205,17 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(8)
 
         root_layout.addWidget(self._build_profile_bar())
+
+        self.baseline_banner = QLabel(
+            "No stock values captured yet. Click 'Capture Stock Values' before applying "
+            "anything, so you can always restore the original limits."
+        )
+        self.baseline_banner.setWordWrap(True)
+        self.baseline_banner.setStyleSheet(
+            "QLabel { border: 1px solid #d4a017; border-radius: 4px; padding: 6px; }"
+        )
+        self.baseline_banner.setVisible(False)
+        root_layout.addWidget(self.baseline_banner)
 
         split_layout = QHBoxLayout()
         split_layout.setSpacing(10)
@@ -207,6 +231,7 @@ class MainWindow(QMainWindow):
         self._build_pages()
 
         output_group = CollapsibleBox("Command Output")
+        output_group.toggle.setToolTip("Commands run by this app and their output")
         output_layout = output_group.content_layout
         self.output_text = QTextEdit()
         self.output_text.setReadOnly(True)
@@ -232,11 +257,16 @@ class MainWindow(QMainWindow):
 
         self.profile_dropdown = QComboBox()
         self.profile_dropdown.setEditable(True)
-        self.profile_dropdown.lineEdit().setPlaceholderText("Type profile name...")
+        self.profile_dropdown.lineEdit().setPlaceholderText("Select a profile or type a new name...")
         self.profile_dropdown.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.profile_dropdown.setMinimumWidth(240)
+        self.profile_dropdown.setToolTip(
+            "Select a saved profile to load its values.\n"
+            "Type a new name to create a new profile from the current values."
+        )
         self.profile_dropdown.currentTextChanged.connect(self._update_profile_action_state)
         self.profile_dropdown.currentTextChanged.connect(self.on_profile_selected)
+        layout.addWidget(self._build_profile_menu_button())
         layout.addWidget(QLabel("Profile:"))
         layout.addWidget(self.profile_dropdown, 1)
 
@@ -249,36 +279,65 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.save_button)
 
         self.delete_button = QPushButton("Delete")
+        self.delete_button.setToolTip("Delete the selected profile")
         self.delete_button.clicked.connect(self.delete_selected_profile)
         layout.addWidget(self.delete_button)
 
-        self.reset_button = QPushButton("Reset to Default")
+        self.reset_button = QPushButton("Restore Stock")
         self.reset_button.clicked.connect(self.reset_to_defaults)
         self.reset_button.setEnabled(False)
-        self.reset_button.setToolTip(
-            "Disabled until 'Set Initial Default' has captured machine baseline values."
-        )
         layout.addWidget(self.reset_button)
 
-        self.initial_default_button = QPushButton("Set Initial Default")
+        self.initial_default_button = QPushButton("Capture Stock Values")
         self.initial_default_button.setToolTip(
-            "Create/update a read-only profile from current machine defaults via 'ryzenadj --info'."
+            "Read the current limits via 'ryzenadj --info' and store them as stock values.\n"
+            "Do this right after a clean boot, before any profile was applied."
         )
         self.initial_default_button.clicked.connect(self.capture_initial_default_profile)
         layout.addWidget(self.initial_default_button)
 
         return bar
 
-    def _build_menu(self) -> None:
-        file_menu = self.menuBar().addMenu("File")
+    def _build_profile_menu_button(self) -> QToolButton:
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
 
-        import_action = QAction("Import Profiles", self)
+        import_action = QAction("Import Profiles...", self)
+        import_action.setToolTip("Replace all profiles with the ones from a JSON file")
         import_action.triggered.connect(self.import_profiles)
-        file_menu.addAction(import_action)
+        menu.addAction(import_action)
 
-        export_action = QAction("Export Profiles", self)
+        export_action = QAction("Export Profiles...", self)
+        export_action.setToolTip("Save all profiles, including stock values, to a JSON file")
         export_action.triggered.connect(self.export_profiles)
-        file_menu.addAction(export_action)
+        menu.addAction(export_action)
+
+        open_folder_action = QAction("Open Profiles Folder", self)
+        open_folder_action.setToolTip(str(self.profile_manager.path))
+        open_folder_action.triggered.connect(
+            lambda: QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(self.profile_manager.config_dir))
+            )
+        )
+        menu.addAction(open_folder_action)
+
+        menu.addSeparator()
+
+        recapture_action = QAction("Re-capture Stock Values...", self)
+        recapture_action.setToolTip(
+            "Overwrite the stored stock values. Only do this right after a clean boot."
+        )
+        recapture_action.triggered.connect(self.recapture_initial_default_profile)
+        menu.addAction(recapture_action)
+
+        button = QToolButton()
+        button.setIcon(QIcon.fromTheme("application-menu", QIcon.fromTheme("open-menu")))
+        if button.icon().isNull():
+            button.setText("☰")
+        button.setToolTip("Import/export profiles, open the profiles folder, re-capture stock values")
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setMenu(menu)
+        return button
 
     def _build_pages(self) -> None:
         self._add_page("Home", self._build_profiles_page())
@@ -304,16 +363,23 @@ class MainWindow(QMainWindow):
 
         description = QLabel(
             "RyzenAdj Control lets you tune platform power, current and clock limits through profiles.\n\n"
-            "Recommended workflow:\n"
-            "1. Right after a clean boot, click 'Set Initial Default'.\n"
-            "   This captures your machine's current baseline from 'ryzenadj --info' into a read-only profile.\n"
-            "2. Create your own profile name at the top bar, tune only needed options, then click Save.\n"
-            "3. Click Apply to execute the generated ryzenadj command.\n"
-            "4. Use Reset to Default to restore the captured baseline values.\n\n"
+            "Workflow:\n"
+            "1. On first start, right after a clean boot, click 'Capture Stock Values'.\n"
+            "   This stores your machine's original limits from 'ryzenadj --info'. "
+            "Apply stays locked until this is done.\n"
+            "2. Type a new profile name at the top, tune the options you need (mark them 'Active'), "
+            "then click 'Create Profile'.\n"
+            "3. Click Apply to run the generated ryzenadj command.\n"
+            "4. Changed values of an existing profile are stored with 'Save Changes'.\n"
+            "5. 'Restore Stock' applies the original limits again and removes active "
+            "boot/resume/re-apply integration.\n\n"
             "Important notes:\n"
-            "- Reset to Default is available only after Initial Default was captured.\n"
-            "- Initial Default is read-only and cannot be edited or deleted.\n"
-            "- Import/Export is available via File menu.\n\n"
+            "- Applied values are not persistent. Use the System page to apply them at boot, "
+            "after resume or periodically.\n"
+            "- The menu button left of 'Profile' offers Import/Export, the profiles folder and "
+            "re-capturing stock values (only do that after a clean boot).\n"
+            "- Importing replaces your profiles but keeps your captured stock values if the "
+            "file has none.\n\n"
             "Risk notice:\n"
             "Aggressive limits can cause instability, thermal stress or shutdowns. "
             "Change values gradually and monitor temperatures under load."
@@ -349,6 +415,7 @@ class MainWindow(QMainWindow):
                 spec.ui_suffix,
             )
             self.option_controls[spec.key] = control
+            self._watch_control_changes(control)
             inner_layout.addWidget(control)
 
         inner_layout.addStretch(1)
@@ -375,6 +442,7 @@ class MainWindow(QMainWindow):
                 spec.ui_suffix,
             )
             self.option_controls[spec.key] = control
+            self._watch_control_changes(control)
             thermal_layout.addWidget(control)
         layout.addWidget(thermal_box)
 
@@ -383,6 +451,7 @@ class MainWindow(QMainWindow):
         for item in BOOLEAN_OPTIONS:
             checkbox = QCheckBox(item["label"])
             checkbox.setToolTip(item["tooltip"])
+            checkbox.toggled.connect(self._update_profile_action_state)
             self.boolean_controls[item["key"]] = checkbox
             mode_layout.addWidget(checkbox)
         self._wire_mutually_exclusive_mode_flags()
@@ -400,6 +469,10 @@ class MainWindow(QMainWindow):
 
         self.use_pkexec_checkbox = QCheckBox("Run privileged commands through pkexec")
         self.use_pkexec_checkbox.setChecked(True)
+        self.use_pkexec_checkbox.setToolTip(
+            "ryzenadj needs root. With this enabled, you are asked for your password per action.\n"
+            "Disable only if the app itself runs as root."
+        )
         form.addRow("Privilege mode:", self.use_pkexec_checkbox)
 
         hint = QLabel(
@@ -414,18 +487,54 @@ class MainWindow(QMainWindow):
         integration_group = QGroupBox("System Integration")
         integration_layout = QVBoxLayout(integration_group)
         self.apply_boot_checkbox = QCheckBox("Apply selected profile at system boot")
+        self.apply_boot_checkbox.setToolTip(
+            "Installs a systemd service that applies the current values on every boot."
+        )
         self.apply_resume_checkbox = QCheckBox("Re-apply selected profile after resume")
+        self.apply_resume_checkbox.setToolTip(
+            "Installs a systemd sleep hook, because limits are usually reset after suspend."
+        )
+        reapply_tooltip = (
+            "Some laptops (e.g. Lenovo ThinkPads with AMD PMF) let the firmware overwrite\n"
+            "applied limits after a while, on power source changes or on power profile changes.\n"
+            "This installs a systemd timer that re-applies the selected profile at the given\n"
+            "interval, without the GUI running.\n\n"
+            "Note: this deliberately overrides the manufacturer's power/thermal limits."
+        )
+        self.reapply_checkbox = QCheckBox("Periodically re-apply selected profile every")
+        self.reapply_checkbox.setToolTip(reapply_tooltip)
+        self.reapply_interval_spin = QSpinBox()
+        self.reapply_interval_spin.setRange(REAPPLY_INTERVAL_MIN, REAPPLY_INTERVAL_MAX)
+        self.reapply_interval_spin.setValue(REAPPLY_INTERVAL_DEFAULT)
+        self.reapply_interval_spin.setSuffix(" s")
+        self.reapply_interval_spin.setToolTip(reapply_tooltip)
+        reapply_row = QHBoxLayout()
+        reapply_row.addWidget(self.reapply_checkbox)
+        reapply_row.addWidget(self.reapply_interval_spin)
+        reapply_row.addStretch(1)
         self.start_gui_on_login_checkbox = QCheckBox("Start RyzenAdj Control automatically after login")
+        self.start_gui_on_login_checkbox.setToolTip(
+            "Adds an autostart entry for this app to your desktop session (no root needed)."
+        )
         self.auto_sync_integration_checkbox = QCheckBox(
-            "Automatically update active boot/resume integration after profile switch"
+            "Automatically update active boot/resume/re-apply integration after profile switch"
+        )
+        self.auto_sync_integration_checkbox.setToolTip(
+            "When you press Apply, the installed boot/resume/re-apply integration is updated\n"
+            "to the applied values as well. Otherwise it keeps the values from the last\n"
+            "'Apply Integration'."
         )
         self.auto_sync_integration_checkbox.setChecked(True)
         integration_layout.addWidget(self.apply_boot_checkbox)
         integration_layout.addWidget(self.apply_resume_checkbox)
+        integration_layout.addLayout(reapply_row)
         integration_layout.addWidget(self.start_gui_on_login_checkbox)
         integration_layout.addWidget(self.auto_sync_integration_checkbox)
 
         integration_button = QPushButton("Apply Integration")
+        integration_button.setToolTip(
+            "Install or remove the integration above, using the current values. Requires authentication."
+        )
         integration_button.clicked.connect(self.apply_system_integration)
         integration_layout.addWidget(integration_button)
         layout.addWidget(integration_group)
@@ -461,6 +570,7 @@ class MainWindow(QMainWindow):
 
         controls = QHBoxLayout()
         refresh_button = QPushButton("Refresh Now")
+        refresh_button.setToolTip("Read the current limits and telemetry via 'ryzenadj --info'")
         refresh_button.clicked.connect(self.refresh_monitor)
         controls.addWidget(refresh_button)
         controls.addStretch(1)
@@ -503,6 +613,37 @@ class MainWindow(QMainWindow):
         self.set_controls_from_values(default_profile_values())
         self._reload_profile_dropdown(data["selected"])
         self._refresh_integration_checkboxes()
+        if not self._has_stock_values():
+            QTimer.singleShot(0, self._prompt_initial_capture)
+
+    def _has_stock_values(self) -> bool:
+        return self.INITIAL_DEFAULT_PROFILE_NAME in self.current_data.get("profiles", {})
+
+    def _prompt_initial_capture(self) -> None:
+        text = (
+            "No stock values have been captured yet.\n\n"
+            "They are read from 'ryzenadj --info' and are needed to restore your original "
+            "limits later. Apply stays locked until they are captured.\n\n"
+            "Capture them now? This is only correct if no custom limits were applied since boot."
+        )
+        if self._is_boot_integration_enabled() or self._is_reapply_integration_enabled():
+            text += (
+                "\n\nWarning: boot or periodic re-apply integration is active, so the current "
+                "limits are probably not stock. Disable it, reboot, then capture."
+            )
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("Capture Stock Values")
+        box.setText(text)
+        capture_button = box.addButton("Capture Now", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is capture_button:
+            self.capture_initial_default_profile()
+
+    def _watch_control_changes(self, control: OptionControl) -> None:
+        control.spin.valueChanged.connect(self._update_profile_action_state)
+        control.enable_checkbox.toggled.connect(self._update_profile_action_state)
 
     def _reload_profile_dropdown(self, selected: str) -> None:
         visible_profiles = self._visible_profile_names()
@@ -608,7 +749,9 @@ class MainWindow(QMainWindow):
             if not self._visible_profile_names():
                 self.set_controls_from_values(default_profile_values())
             if was_selected_profile and (
-                self._is_boot_integration_enabled() or self._is_resume_integration_enabled()
+                self._is_boot_integration_enabled()
+                or self._is_resume_integration_enabled()
+                or self._is_reapply_integration_enabled()
             ):
                 self._remove_profile_bound_integrations()
             self._update_status(f"Deleted profile: {name}", True)
@@ -618,8 +761,34 @@ class MainWindow(QMainWindow):
     def reset_to_defaults(self) -> None:
         values = self.current_data.get("profiles", {}).get(self.INITIAL_DEFAULT_PROFILE_NAME)
         if not values:
-            self._update_status("Initial Default profile not set yet", False)
+            self._update_status("Stock values not captured yet", False)
             return
+        command = build_ryzenadj_command(values, binary="/usr/bin/ryzenadj")
+        if len(command) == 1:
+            self._show_error("Captured stock values contain no usable settings. Re-capture them.")
+            return
+
+        has_integration = (
+            self._is_boot_integration_enabled()
+            or self._is_resume_integration_enabled()
+            or self._is_reapply_integration_enabled()
+        )
+        text = "Apply the captured stock values now?"
+        if has_integration:
+            text += (
+                "\n\nActive boot/resume/periodic re-apply integration will be removed, "
+                "otherwise it would apply your profile again."
+            )
+        answer = QMessageBox.question(
+            self,
+            "Restore Stock",
+            text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
         self.set_controls_from_values(values)
         self.current_data["selected"] = ""
         self.profile_manager.save_all(self.current_data)
@@ -627,9 +796,37 @@ class MainWindow(QMainWindow):
         self.profile_dropdown.setEditText("")
         self.profile_dropdown.blockSignals(False)
         self._update_profile_action_state()
-        self._update_status(
-            "Initial defaults loaded. Press Apply to activate these values.",
-            True,
+
+        script_lines = ["set -euo pipefail", shlex.join(command)]
+        if has_integration:
+            script_lines.append(
+                self.systemd_manager.build_sync_script(
+                    command=["/usr/bin/ryzenadj"],
+                    enable_boot=False,
+                    enable_resume=False,
+                    enable_reapply=False,
+                )
+            )
+
+        self.apply_button.setEnabled(False)
+        self.reset_button.setEnabled(False)
+        self._update_status("Restoring stock values...", True)
+
+        def _callback(success: bool, stdout: str, stderr: str, shell_command: str) -> None:
+            self._append_output(shell_command, stdout, stderr)
+            if success:
+                self._update_status("Stock values restored", True)
+            elif self._is_warning_dominated_output(stdout, stderr):
+                self._update_status("Stock values restored with warnings", True)
+            else:
+                self._update_status("Restoring stock values failed", False)
+            self._refresh_integration_checkboxes()
+            self._update_profile_action_state()
+
+        self.executor.run_shell_async(
+            "\n".join(script_lines),
+            use_pkexec=self.use_pkexec_checkbox.isChecked(),
+            callback=_callback,
         )
 
     def import_profiles(self) -> None:
@@ -642,8 +839,12 @@ class MainWindow(QMainWindow):
         if not path_text:
             return
 
+        stock_values = self.current_data.get("profiles", {}).get(self.INITIAL_DEFAULT_PROFILE_NAME)
         try:
             self.current_data = self.profile_manager.import_profiles(Path(path_text))
+            if stock_values and not self._has_stock_values():
+                self.current_data["profiles"][self.INITIAL_DEFAULT_PROFILE_NAME] = stock_values
+                self.profile_manager.save_all(self.current_data)
             self._reload_profile_dropdown(self.current_data["selected"])
             self._update_status(f"Imported profiles from {path_text}", True)
         except ProfileError as exc:
@@ -688,11 +889,10 @@ class MainWindow(QMainWindow):
 
     def _on_apply_finished(self, success: bool, stdout: str, stderr: str, command: str) -> None:
         self._append_output(command, stdout, stderr)
+        self._update_profile_action_state()
         if success:
-            self.apply_button.setEnabled(True)
             self._update_status("Profile applied successfully", True)
         else:
-            self.apply_button.setEnabled(True)
             if self._is_warning_dominated_output(stdout, stderr):
                 self._update_status("Profile applied with warnings", True)
                 return
@@ -700,6 +900,21 @@ class MainWindow(QMainWindow):
             if "permission denied" in stderr.lower() and not self.use_pkexec_checkbox.isChecked():
                 hint = " (enable pkexec in System page)"
             self._update_status(f"Apply failed{hint}", False)
+
+    def recapture_initial_default_profile(self) -> None:
+        if self._has_stock_values():
+            answer = QMessageBox.warning(
+                self,
+                "Re-capture Stock Values",
+                "This overwrites the stored stock values with the limits that are active right now.\n\n"
+                "Only continue right after a clean boot, before any profile was applied. "
+                "Otherwise 'Restore Stock' will restore your tuned values instead of the originals.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self.capture_initial_default_profile()
 
     def capture_initial_default_profile(self) -> None:
         self._update_status("Reading initial defaults from ryzenadj --info...", True)
@@ -722,6 +937,26 @@ class MainWindow(QMainWindow):
             return
 
         values = parse_profile_values_from_info(stdout)
+        if not any(value for key, value in values.items() if key.endswith("_enabled")):
+            self._update_status("Stock values could not be read", False)
+            reason = (
+                METRICS_UNAVAILABLE_HINT
+                if metrics_unavailable(stdout + stderr)
+                else "'ryzenadj --info' returned no readable limits."
+            )
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("Capture Stock Values")
+            box.setText(f"Stock values were not stored.\n\n{reason}")
+            unlock_button = box.addButton(
+                "Unlock Apply Without Stock Values", QMessageBox.ButtonRole.DestructiveRole
+            )
+            box.addButton("Keep Locked", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is unlock_button:
+                self.apply_unlocked_without_stock = True
+                self._update_profile_action_state()
+            return
         previous_visible = self.profile_dropdown.currentText().strip()
         try:
             self.current_data = self.profile_manager.upsert_profile(
@@ -734,7 +969,7 @@ class MainWindow(QMainWindow):
                 self.current_data["selected"] = ""
             self.profile_manager.save_all(self.current_data)
             self._reload_profile_dropdown(self.current_data["selected"])
-            self._update_status("Initial default profile captured", True)
+            self._update_status("Stock values captured", True)
         except ProfileError as exc:
             self._show_error(str(exc))
 
@@ -743,6 +978,8 @@ class MainWindow(QMainWindow):
             return
         if not self.start_gui_on_login_checkbox:
             return
+        if not self.reapply_checkbox or not self.reapply_interval_spin:
+            return
 
         command = build_ryzenadj_command(
             self.collect_current_values(),
@@ -750,10 +987,13 @@ class MainWindow(QMainWindow):
         )
         wants_boot = self.apply_boot_checkbox.isChecked()
         wants_resume = self.apply_resume_checkbox.isChecked()
+        wants_reapply = self.reapply_checkbox.isChecked()
         wants_login_autostart = self.start_gui_on_login_checkbox.isChecked()
 
-        if (wants_boot or wants_resume) and len(command) == 1:
-            self._show_error("Enable at least one setting before applying boot/resume integration.")
+        if (wants_boot or wants_resume or wants_reapply) and len(command) == 1:
+            self._show_error(
+                "Enable at least one setting before applying boot/resume/re-apply integration."
+            )
             return
 
         if len(command) == 1:
@@ -763,6 +1003,8 @@ class MainWindow(QMainWindow):
             command=command,
             enable_boot=wants_boot,
             enable_resume=wants_resume,
+            enable_reapply=wants_reapply,
+            reapply_interval=self.reapply_interval_spin.value(),
         )
         self._update_status("Applying integration settings...", True)
 
@@ -809,11 +1051,16 @@ class MainWindow(QMainWindow):
             return False
         if not self.auto_sync_integration_checkbox.isChecked():
             return False
-        return self._is_boot_integration_enabled() or self._is_resume_integration_enabled()
+        return (
+            self._is_boot_integration_enabled()
+            or self._is_resume_integration_enabled()
+            or self._is_reapply_integration_enabled()
+        )
 
     def _run_apply_with_active_integration_sync(self, values: dict) -> None:
         active_boot = self._is_boot_integration_enabled()
         active_resume = self._is_resume_integration_enabled()
+        active_reapply = self._is_reapply_integration_enabled()
         command_sync = build_ryzenadj_command(values, binary="/usr/bin/ryzenadj")
         if len(command_sync) == 1:
             self._update_status(
@@ -827,6 +1074,8 @@ class MainWindow(QMainWindow):
             command=command_sync,
             enable_boot=active_boot,
             enable_resume=active_resume,
+            enable_reapply=active_reapply,
+            reapply_interval=self._installed_reapply_interval() or REAPPLY_INTERVAL_DEFAULT,
         )
         apply_line = shlex.join(command_sync)
         script = "\n".join(
@@ -842,7 +1091,7 @@ class MainWindow(QMainWindow):
 
         def _callback(success: bool, stdout: str, stderr: str, shell_command: str) -> None:
             self._append_output(shell_command, stdout, stderr)
-            self.apply_button.setEnabled(True)
+            self._update_profile_action_state()
             if success:
                 self._update_status("Profile applied and active integration updated", True)
             elif self._is_warning_dominated_output(stdout, stderr):
@@ -872,11 +1121,18 @@ class MainWindow(QMainWindow):
             self._update_status("Monitoring refresh failed", False)
             return
 
+        self.monitor_raw_output.setPlainText(stdout)
+        if metrics_unavailable(stdout + stderr):
+            for label in self.monitor_labels.values():
+                label.setText("N/A")
+            self._update_status("Monitoring unavailable: power metric table not readable", False)
+            QMessageBox.warning(self, "Monitoring Unavailable", METRICS_UNAVAILABLE_HINT)
+            return
+
         parsed = parse_info_output(stdout)
         for key, label in self.monitor_labels.items():
             label.setText(parsed.get(key, "N/A"))
 
-        self.monitor_raw_output.setPlainText(stdout)
         self._update_status("Monitoring data refreshed", True)
 
     def _append_output(self, command: str, stdout: str, stderr: str) -> None:
@@ -896,16 +1152,48 @@ class MainWindow(QMainWindow):
         has_name = bool(current_name)
         exists = current_name in self._visible_profile_names()
         readonly = self._is_read_only_profile(current_name)
-        has_initial_default = (
-            self.INITIAL_DEFAULT_PROFILE_NAME in self.current_data.get("profiles", {})
-        )
+        has_stock = self._has_stock_values()
 
         if self.save_button:
-            self.save_button.setEnabled(has_name and not readonly)
+            if not has_name or readonly:
+                self.save_button.setText("Save")
+                self.save_button.setEnabled(False)
+                self.save_button.setToolTip("Select a profile or type a new name first")
+            elif not exists:
+                self.save_button.setText("Create Profile")
+                self.save_button.setEnabled(True)
+                self.save_button.setToolTip(
+                    f"Create new profile '{current_name}' from the current values"
+                )
+            elif self.collect_current_values() != self.current_data["profiles"][current_name]:
+                self.save_button.setText("Save Changes")
+                self.save_button.setEnabled(True)
+                self.save_button.setToolTip(
+                    f"Overwrite profile '{current_name}' with the current values"
+                )
+            else:
+                self.save_button.setText("Saved")
+                self.save_button.setEnabled(False)
+                self.save_button.setToolTip(f"Profile '{current_name}' has no unsaved changes")
         if self.delete_button:
             self.delete_button.setEnabled(exists and not readonly)
         if self.reset_button:
-            self.reset_button.setEnabled(has_initial_default)
+            self.reset_button.setEnabled(has_stock)
+            self.reset_button.setToolTip(
+                "Apply the captured stock values and remove active boot/resume/re-apply integration"
+                if has_stock
+                else "Available after 'Capture Stock Values'"
+            )
+        if self.initial_default_button:
+            self.initial_default_button.setVisible(not has_stock)
+        self.baseline_banner.setVisible(not has_stock)
+        self.apply_button.setEnabled(has_stock or self.apply_unlocked_without_stock)
+        self.apply_button.setToolTip(
+            "Run ryzenadj now with all settings marked 'Active', including unsaved changes.\n"
+            "Not persistent: use the System page for boot/resume/periodic re-apply."
+            if has_stock or self.apply_unlocked_without_stock
+            else "Locked until stock values are captured, so you can always restore them"
+        )
 
     def _wire_mutually_exclusive_mode_flags(self) -> None:
         power_saving = self.boolean_controls.get("power_saving")
@@ -956,6 +1244,12 @@ class MainWindow(QMainWindow):
         self.apply_resume_checkbox.blockSignals(False)
         self.start_gui_on_login_checkbox.blockSignals(False)
 
+        if self.reapply_checkbox and self.reapply_interval_spin:
+            self.reapply_checkbox.setChecked(self._is_reapply_integration_enabled())
+            installed_interval = self._installed_reapply_interval()
+            if installed_interval is not None:
+                self.reapply_interval_spin.setValue(installed_interval)
+
     def _is_boot_integration_enabled(self) -> bool:
         try:
             proc = subprocess.run(
@@ -970,6 +1264,35 @@ class MainWindow(QMainWindow):
 
     def _is_resume_integration_enabled(self) -> bool:
         return Path("/usr/lib/systemd/system-sleep/ryzenadj-control-resume").exists()
+
+    def _is_reapply_integration_enabled(self) -> bool:
+        try:
+            proc = subprocess.run(
+                ["systemctl", "is-enabled", "ryzenadj-control-reapply.timer"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            return proc.returncode == 0 and proc.stdout.strip() == "enabled"
+        except OSError:
+            return False
+
+    def _installed_reapply_interval(self) -> int | None:
+        try:
+            content = REAPPLY_TIMER_PATH.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        for line in content.splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == "OnUnitActiveSec" and value.strip().endswith("s"):
+                try:
+                    interval = int(value.strip()[:-1])
+                except ValueError:
+                    return None
+                if REAPPLY_INTERVAL_MIN <= interval <= REAPPLY_INTERVAL_MAX:
+                    return interval
+                return None
+        return None
 
     def _gui_autostart_path(self) -> Path:
         return Path.home() / ".config" / "autostart" / "ryzenadj-control.desktop"
@@ -1018,12 +1341,12 @@ class MainWindow(QMainWindow):
             self._append_output(shell_command, stdout, stderr)
             if success:
                 self._update_status(
-                    "Deleted active profile and removed boot/resume integration",
+                    "Deleted active profile and removed boot/resume/re-apply integration",
                     True,
                 )
             else:
                 self._update_status(
-                    "Profile deleted, but removing boot/resume integration failed",
+                    "Profile deleted, but removing boot/resume/re-apply integration failed",
                     False,
                 )
             self._refresh_integration_checkboxes()
