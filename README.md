@@ -15,8 +15,9 @@ Native PyQt6 frontend for `ryzenadj` on Linux.
 - System integration via checkboxes + `Apply Integration`:
   - apply selected profile at boot
   - re-apply after resume
-  - periodically re-apply via systemd timer (for firmware that resets limits, e.g. ThinkPads with AMD PMF)
+  - periodically re-apply (for firmware that resets limits, e.g. ThinkPads with AMD PMF)
   - start GUI automatically after login
+- Integration uses systemd (service, sleep hook, timer); without systemd (e.g. OpenRC) it falls back to cron (`/etc/cron.d`, e.g. cronie) for boot and periodic re-apply (minimum 1 minute) and elogind for resume
 - Integration state is detected at app startup
 - Optional auto-sync of active boot/resume/re-apply integration after Apply
 - Monitoring page with `ryzenadj --info`
@@ -41,7 +42,7 @@ Install required runtime dependencies before installation:
 
 **Important:**
 
-- `ryzenadj` must be installed and available in `PATH`.
+- `ryzenadj` must be installed, either in `PATH` or in a standard location such as `/usr/local/bin` or `/usr/bin`.
 - `pkexec` must work, otherwise privileged apply/integration actions will fail.
 
 Check `ryzenadj`:
@@ -127,7 +128,7 @@ Notes:
 
 ## Troubleshooting
 
-- `Command not found`: install `ryzenadj` and verify it is in `PATH`.
+- `ryzenadj was not found`: install `ryzenadj` into `PATH` or `/usr/local/bin`, then restart the app.
 - Apply does nothing: enable at least one setting before `Apply`.
 - Permission errors: enable `pkexec` in System tab.
 - Monitoring values show `N/A`: inspect raw `--info` output in Monitoring.

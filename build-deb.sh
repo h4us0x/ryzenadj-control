@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT="ryzenadj-control"
-VERSION="${1:-0.2.0}"
+VERSION="${1:-0.3.0}"
 ARCH="${2:-amd64}"
 PKGROOT="${PROJECT}_${VERSION}_${ARCH}"
 DEBFILE="${PKGROOT}.deb"

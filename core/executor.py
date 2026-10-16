@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 from collections.abc import Callable
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 from core.options import BOOLEAN_OPTIONS, NUMERIC_OPTIONS
+
+# Desktop launchers may start the app with a reduced PATH, so also search the
+# usual install locations (e.g. /usr/local/bin for source builds on Ubuntu).
+RYZENADJ_SEARCH_DIRS = ("/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/usr/sbin", "/bin", "/sbin")
+
+
+def find_ryzenadj() -> str | None:
+    """Return the absolute path of the ryzenadj binary, or None if not installed."""
+    search_path = os.pathsep.join([os.environ.get("PATH", ""), *RYZENADJ_SEARCH_DIRS])
+    found = shutil.which("ryzenadj", path=search_path)
+    return os.path.abspath(found) if found else None
 
 
 def build_ryzenadj_command(values: dict, binary: str = "ryzenadj") -> list[str]:
@@ -97,7 +109,7 @@ class CommandExecutor(QObject):
         use_pkexec: bool,
         callback: Callable[[bool, str, str, str], None],
     ) -> None:
-        command = ["/usr/bin/bash", "-lc", script]
+        command = ["/bin/bash", "-lc", script]
         final_command = self._prepend_privilege(command, use_pkexec)
         self._spawn_worker(final_command, callback)
 

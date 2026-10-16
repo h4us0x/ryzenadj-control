@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 import shlex
 from datetime import datetime
 from pathlib import Path
@@ -36,7 +35,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.executor import CommandExecutor, build_ryzenadj_command
+from core.executor import CommandExecutor, build_ryzenadj_command, find_ryzenadj
 from core.monitor import (
     METRICS_UNAVAILABLE_HINT,
     metrics_unavailable,
@@ -46,11 +45,7 @@ from core.monitor import (
 from core.options import BOOLEAN_OPTIONS, NUMERIC_OPTIONS, default_profile_values, options_by_category
 from core.profiles import ProfileError, ProfileManager
 from core.systemd import (
-    REAPPLY_INTERVAL_DEFAULT,
-    REAPPLY_INTERVAL_MAX,
-    REAPPLY_INTERVAL_MIN,
-    REAPPLY_TIMER_PATH,
-    SystemdManager,
+    detect_integration_manager,
 )
 
 
@@ -153,6 +148,11 @@ class OptionControl(QWidget):
 class MainWindow(QMainWindow):
     """Main GUI composition and actions."""
     INITIAL_DEFAULT_PROFILE_NAME = "Initial Default"
+    RYZENADJ_MISSING_MESSAGE = (
+        "ryzenadj was not found in PATH or the usual install locations "
+        "(/usr/local/bin, /usr/bin, ...).\n\n"
+        "Install ryzenadj and restart RyzenAdj Control."
+    )
     WARNING_PATTERNS = (
         "not supported on this family",
         "is not supported",
@@ -176,7 +176,9 @@ class MainWindow(QMainWindow):
 
         self.profile_manager = ProfileManager()
         self.executor = CommandExecutor()
-        self.systemd_manager = SystemdManager()
+        self.integration = detect_integration_manager()
+        self.ryzenadj_path = find_ryzenadj()
+        self.ryzenadj_bin = self.ryzenadj_path or "ryzenadj"
 
         self.current_data: dict = {}
         self.option_controls: dict[str, OptionControl] = {}
@@ -486,28 +488,61 @@ class MainWindow(QMainWindow):
 
         integration_group = QGroupBox("System Integration")
         integration_layout = QVBoxLayout(integration_group)
+        if self.integration:
+            backend_text = f"Backend: {self.integration.description}"
+        else:
+            backend_text = (
+                "Boot/resume/re-apply integration unavailable: neither systemd nor /etc/cron.d "
+                "was found. Run the command from 'Command Output' via your init system instead."
+            )
+        backend_label = QLabel(backend_text)
+        backend_label.setWordWrap(True)
+        backend_label.setToolTip(
+            "systemd is used when it is the running init system. Otherwise cron (/etc/cron.d,\n"
+            "e.g. cronie) handles boot and periodic re-apply, and elogind handles resume."
+        )
+        integration_layout.addWidget(backend_label)
+
         self.apply_boot_checkbox = QCheckBox("Apply selected profile at system boot")
         self.apply_boot_checkbox.setToolTip(
-            "Installs a systemd service that applies the current values on every boot."
+            "Applies the current values on every boot (systemd service or cron @reboot)."
         )
         self.apply_resume_checkbox = QCheckBox("Re-apply selected profile after resume")
         self.apply_resume_checkbox.setToolTip(
-            "Installs a systemd sleep hook, because limits are usually reset after suspend."
+            "Installs a sleep hook (systemd or elogind), because limits are usually reset\n"
+            "after suspend."
         )
         reapply_tooltip = (
             "Some laptops (e.g. Lenovo ThinkPads with AMD PMF) let the firmware overwrite\n"
             "applied limits after a while, on power source changes or on power profile changes.\n"
-            "This installs a systemd timer that re-applies the selected profile at the given\n"
-            "interval, without the GUI running.\n\n"
+            "This re-applies the selected profile at the given interval, without the GUI\n"
+            "running (systemd timer, or cron with a minimum of 1 minute).\n\n"
             "Note: this deliberately overrides the manufacturer's power/thermal limits."
         )
         self.reapply_checkbox = QCheckBox("Periodically re-apply selected profile every")
         self.reapply_checkbox.setToolTip(reapply_tooltip)
         self.reapply_interval_spin = QSpinBox()
-        self.reapply_interval_spin.setRange(REAPPLY_INTERVAL_MIN, REAPPLY_INTERVAL_MAX)
-        self.reapply_interval_spin.setValue(REAPPLY_INTERVAL_DEFAULT)
-        self.reapply_interval_spin.setSuffix(" s")
+        if self.integration:
+            self.reapply_interval_spin.setRange(
+                self.integration.interval_min, self.integration.interval_max
+            )
+            self.reapply_interval_spin.setValue(self.integration.interval_default)
+            self.reapply_interval_spin.setSuffix(self.integration.interval_suffix)
         self.reapply_interval_spin.setToolTip(reapply_tooltip)
+
+        if not self.integration:
+            for widget in (
+                self.apply_boot_checkbox,
+                self.apply_resume_checkbox,
+                self.reapply_checkbox,
+                self.reapply_interval_spin,
+            ):
+                widget.setEnabled(False)
+        elif not self.integration.resume_available:
+            self.apply_resume_checkbox.setEnabled(False)
+            self.apply_resume_checkbox.setToolTip(
+                "Unavailable: no elogind sleep hook directory found."
+            )
         reapply_row = QHBoxLayout()
         reapply_row.addWidget(self.reapply_checkbox)
         reapply_row.addWidget(self.reapply_interval_spin)
@@ -613,7 +648,9 @@ class MainWindow(QMainWindow):
         self.set_controls_from_values(default_profile_values())
         self._reload_profile_dropdown(data["selected"])
         self._refresh_integration_checkboxes()
-        if not self._has_stock_values():
+        if not self.ryzenadj_path:
+            QTimer.singleShot(0, lambda: self._show_error(self.RYZENADJ_MISSING_MESSAGE))
+        elif not self._has_stock_values():
             QTimer.singleShot(0, self._prompt_initial_capture)
 
     def _has_stock_values(self) -> bool:
@@ -759,11 +796,13 @@ class MainWindow(QMainWindow):
             self._show_error(str(exc))
 
     def reset_to_defaults(self) -> None:
+        if not self._require_ryzenadj():
+            return
         values = self.current_data.get("profiles", {}).get(self.INITIAL_DEFAULT_PROFILE_NAME)
         if not values:
             self._update_status("Stock values not captured yet", False)
             return
-        command = build_ryzenadj_command(values, binary="/usr/bin/ryzenadj")
+        command = build_ryzenadj_command(values, binary=self.ryzenadj_bin)
         if len(command) == 1:
             self._show_error("Captured stock values contain no usable settings. Re-capture them.")
             return
@@ -800,8 +839,8 @@ class MainWindow(QMainWindow):
         script_lines = ["set -euo pipefail", shlex.join(command)]
         if has_integration:
             script_lines.append(
-                self.systemd_manager.build_sync_script(
-                    command=["/usr/bin/ryzenadj"],
+                self.integration.build_sync_script(
+                    command=[self.ryzenadj_bin],
                     enable_boot=False,
                     enable_resume=False,
                     enable_reapply=False,
@@ -867,8 +906,10 @@ class MainWindow(QMainWindow):
             self._show_error(str(exc))
 
     def apply_current_values(self) -> None:
+        if not self._require_ryzenadj():
+            return
         values = self.collect_current_values()
-        command = build_ryzenadj_command(values)
+        command = build_ryzenadj_command(values, binary=self.ryzenadj_bin)
         if len(command) == 1:
             self._update_status("No active settings selected for Apply", False)
             self._append_output(" ".join(command), "", "No active settings selected.")
@@ -917,9 +958,11 @@ class MainWindow(QMainWindow):
         self.capture_initial_default_profile()
 
     def capture_initial_default_profile(self) -> None:
+        if not self._require_ryzenadj():
+            return
         self._update_status("Reading initial defaults from ryzenadj --info...", True)
         self.executor.run_async(
-            ["ryzenadj", "--info"],
+            [self.ryzenadj_bin, "--info"],
             use_pkexec=self.use_pkexec_checkbox.isChecked(),
             callback=self._on_initial_default_capture_finished,
         )
@@ -983,12 +1026,23 @@ class MainWindow(QMainWindow):
 
         command = build_ryzenadj_command(
             self.collect_current_values(),
-            binary="/usr/bin/ryzenadj",
+            binary=self.ryzenadj_bin,
         )
         wants_boot = self.apply_boot_checkbox.isChecked()
         wants_resume = self.apply_resume_checkbox.isChecked()
         wants_reapply = self.reapply_checkbox.isChecked()
         wants_login_autostart = self.start_gui_on_login_checkbox.isChecked()
+
+        if not self.integration:
+            autostart_ok, autostart_message = self._set_gui_autostart(wants_login_autostart)
+            self._update_status(
+                "GUI autostart updated" if autostart_ok else autostart_message, autostart_ok
+            )
+            self._refresh_integration_checkboxes()
+            return
+
+        if (wants_boot or wants_resume or wants_reapply) and not self._require_ryzenadj():
+            return
 
         if (wants_boot or wants_resume or wants_reapply) and len(command) == 1:
             self._show_error(
@@ -997,9 +1051,9 @@ class MainWindow(QMainWindow):
             return
 
         if len(command) == 1:
-            command = ["/usr/bin/ryzenadj"]
+            command = [self.ryzenadj_bin]
 
-        script = self.systemd_manager.build_sync_script(
+        script = self.integration.build_sync_script(
             command=command,
             enable_boot=wants_boot,
             enable_resume=wants_resume,
@@ -1061,21 +1115,23 @@ class MainWindow(QMainWindow):
         active_boot = self._is_boot_integration_enabled()
         active_resume = self._is_resume_integration_enabled()
         active_reapply = self._is_reapply_integration_enabled()
-        command_sync = build_ryzenadj_command(values, binary="/usr/bin/ryzenadj")
+        command_sync = build_ryzenadj_command(values, binary=self.ryzenadj_bin)
         if len(command_sync) == 1:
             self._update_status(
                 "No active settings selected for Apply",
                 False,
             )
-            self._append_output("/usr/bin/ryzenadj", "", "No active settings selected.")
+            self._append_output(self.ryzenadj_bin, "", "No active settings selected.")
             return
 
-        integration_script = self.systemd_manager.build_sync_script(
+        integration_script = self.integration.build_sync_script(
             command=command_sync,
             enable_boot=active_boot,
             enable_resume=active_resume,
             enable_reapply=active_reapply,
-            reapply_interval=self._installed_reapply_interval() or REAPPLY_INTERVAL_DEFAULT,
+            reapply_interval=(
+                self._installed_reapply_interval() or self.integration.interval_default
+            ),
         )
         apply_line = shlex.join(command_sync)
         script = "\n".join(
@@ -1107,9 +1163,11 @@ class MainWindow(QMainWindow):
         )
 
     def refresh_monitor(self) -> None:
+        if not self._require_ryzenadj():
+            return
         self._update_status("Refreshing ryzenadj --info...", True)
         self.executor.run_async(
-            ["ryzenadj", "--info"],
+            [self.ryzenadj_bin, "--info"],
             use_pkexec=self.use_pkexec_checkbox.isChecked(),
             callback=self._on_monitor_finished,
         )
@@ -1251,48 +1309,24 @@ class MainWindow(QMainWindow):
                 self.reapply_interval_spin.setValue(installed_interval)
 
     def _is_boot_integration_enabled(self) -> bool:
-        try:
-            proc = subprocess.run(
-                ["systemctl", "is-enabled", "ryzenadj-control.service"],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            return proc.returncode == 0 and proc.stdout.strip() == "enabled"
-        except OSError:
-            return False
+        return bool(self.integration and self.integration.is_boot_enabled())
 
     def _is_resume_integration_enabled(self) -> bool:
-        return Path("/usr/lib/systemd/system-sleep/ryzenadj-control-resume").exists()
+        return bool(self.integration and self.integration.is_resume_enabled())
 
     def _is_reapply_integration_enabled(self) -> bool:
-        try:
-            proc = subprocess.run(
-                ["systemctl", "is-enabled", "ryzenadj-control-reapply.timer"],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            return proc.returncode == 0 and proc.stdout.strip() == "enabled"
-        except OSError:
-            return False
+        return bool(self.integration and self.integration.is_reapply_enabled())
 
     def _installed_reapply_interval(self) -> int | None:
-        try:
-            content = REAPPLY_TIMER_PATH.read_text(encoding="utf-8")
-        except OSError:
+        if not self.integration:
             return None
-        for line in content.splitlines():
-            key, _, value = line.partition("=")
-            if key.strip() == "OnUnitActiveSec" and value.strip().endswith("s"):
-                try:
-                    interval = int(value.strip()[:-1])
-                except ValueError:
-                    return None
-                if REAPPLY_INTERVAL_MIN <= interval <= REAPPLY_INTERVAL_MAX:
-                    return interval
-                return None
-        return None
+        return self.integration.installed_reapply_interval()
+
+    def _require_ryzenadj(self) -> bool:
+        if self.ryzenadj_path:
+            return True
+        self._show_error(self.RYZENADJ_MISSING_MESSAGE)
+        return False
 
     def _gui_autostart_path(self) -> Path:
         return Path.home() / ".config" / "autostart" / "ryzenadj-control.desktop"
@@ -1331,8 +1365,8 @@ class MainWindow(QMainWindow):
             return False, f"GUI autostart update failed: {exc}"
 
     def _remove_profile_bound_integrations(self) -> None:
-        script = self.systemd_manager.build_sync_script(
-            command=["/usr/bin/ryzenadj"],
+        script = self.integration.build_sync_script(
+            command=[self.ryzenadj_bin],
             enable_boot=False,
             enable_resume=False,
         )
